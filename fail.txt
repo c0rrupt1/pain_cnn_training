@@ -1,0 +1,13 @@
+
+Pain level range: 1.0-10.0
+Traceback (most recent call last):
+  File "C:\Users\brain\OneDrive\Desktop\tame\pain_cnn_training\train_pain_cnn.py", line 414, in <module>
+    model, history = train_pain_classifier(CONFIG)
+  File "C:\Users\brain\OneDrive\Desktop\tame\pain_cnn_training\train_pain_cnn.py", line 217, in train_pain_classifier
+    df = dataset.prepare_dataset()
+  File "C:\Users\brain\OneDrive\Desktop\tame\pain_cnn_training\train_pain_cnn.py", line 97, in prepare_dataset
+    class_idx, class_name = self.get_pain_class(pain_level)
+  File "C:\Users\brain\OneDrive\Desktop\tame\pain_cnn_training\train_pain_cnn.py", line 65, in get_pain_class
+    pain_level = int(pain_level)
+ValueError: cannot convert float NaN to integer
+PS C:\Users\brain\OneDrive\Desktop\tame\pain_cnn_training>
