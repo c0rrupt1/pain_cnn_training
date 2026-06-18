@@ -55,6 +55,33 @@ def load_mel_spectrogram(audio_path, config):
         return None
 
 
+# Load saved spectrogram normalization stats if available
+_DEFAULT_SCALER = None
+_STATS_LOADED = False
+
+
+def _load_scaler():
+    global _DEFAULT_SCALER, _STATS_LOADED
+    if _STATS_LOADED:
+        return _DEFAULT_SCALER
+    _STATS_LOADED = True
+    stats_path = os.path.join(os.path.dirname(__file__), 'spec_norm_stats.npz')
+    if os.path.exists(stats_path):
+        try:
+            stats = np.load(stats_path)
+            scaler = StandardScaler()
+            scaler.mean_ = stats['mean']
+            scaler.scale_ = stats['scale']
+            scaler.n_features_in_ = len(scaler.mean_)
+            _DEFAULT_SCALER = scaler
+            print(f"Loaded spectrogram normalization stats from {stats_path}")
+        except Exception as e:
+            print(f"Warning: failed to load normalization stats: {e}")
+    else:
+        print(f"Warning: {stats_path} not found. Inference will use per-sample normalization (results may differ from training).")
+    return _DEFAULT_SCALER
+
+
 def predict_pain_level(audio_path, model, scaler=None, config=None):
     """Predict pain level from audio file"""
     
@@ -68,6 +95,8 @@ def predict_pain_level(audio_path, model, scaler=None, config=None):
     
     # Normalize
     X = mel_spec[np.newaxis, ...]
+    if scaler is None:
+        scaler = _load_scaler()
     if scaler is not None:
         original_shape = X.shape
         X = scaler.transform(X.reshape(X.shape[0], -1))

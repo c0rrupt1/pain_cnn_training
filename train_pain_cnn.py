@@ -350,6 +350,14 @@ def train_pain_classifier(config):
     model_path = 'pain_cnn_model.h5'
     model.save(model_path)
     print(f"Model saved to {model_path}")
+
+    # Save spec normalization stats for inference
+    try:
+        stats_path = 'spec_norm_stats.npz'
+        np.savez(stats_path, mean=scaler.mean_, scale=scaler.scale_)
+        print(f"Saved spectrogram normalization stats to {stats_path}")
+    except Exception as e:
+        print(f"Warning: could not save spec_norm_stats.npz: {e}")
     
     # Plot training history
     print("Saving training history plot...")
