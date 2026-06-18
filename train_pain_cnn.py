@@ -62,6 +62,9 @@ class PainAudioDataset:
         
     def get_pain_class(self, pain_level):
         """Map pain level (1-10) to class (0=low, 1=medium, 2=high)"""
+        # Handle missing or NaN pain levels
+        if pd.isna(pain_level):
+            return None, None
         pain_level = int(pain_level)
         if PAIN_CLASSES['low'][0] <= pain_level <= PAIN_CLASSES['low'][1]:
             return 0, 'low'
@@ -83,6 +86,9 @@ class PainAudioDataset:
             uttnum = row['UTTNUM']
             uttid = int(row['UTTID'])
             pain_level = row['REVISED PAIN']
+            # Skip entries without a valid pain label
+            if pd.isna(pain_level):
+                continue
             
             # Construct audio file path
             audio_file = f"{pid}.{cond}.{int(uttnum)}.{uttid}.wav"
