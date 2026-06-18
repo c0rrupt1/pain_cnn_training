@@ -132,7 +132,7 @@ class PainAudioDataset:
             # Pad or trim to fixed length
             max_samples = int(self.config['duration'] * self.config['sample_rate'])
             if len(y) < max_samples:
-                y = np.pad(y, (0, max_samples - len(y)), mode='constant', value=0)
+                y = np.pad(y, (0, max_samples - len(y)), mode='constant', constant_values=0)
             else:
                 y = y[:max_samples]
             
@@ -246,6 +246,13 @@ def train_pain_classifier(config):
     
     print(f"Successfully loaded {len(X)} mel spectrograms")
     print(f"Mel spectrogram shape: {X.shape}")
+    # Debug: label distribution
+    try:
+        unique, counts = np.unique(y, return_counts=True)
+        dist = dict(zip(unique.tolist(), counts.tolist()))
+        print(f"Label distribution (class_idx:count): {dist}")
+    except Exception:
+        print("Could not compute label distribution")
     
     # Split dataset
     print("\n[3/5] Splitting dataset...")

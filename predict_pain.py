@@ -33,7 +33,7 @@ def load_mel_spectrogram(audio_path, config):
         # Pad or trim to fixed length
         max_samples = int(config['duration'] * config['sample_rate'])
         if len(y) < max_samples:
-            y = np.pad(y, (0, max_samples - len(y)), mode='constant', value=0)
+            y = np.pad(y, (0, max_samples - len(y)), mode='constant', constant_values=0)
         else:
             y = y[:max_samples]
         
