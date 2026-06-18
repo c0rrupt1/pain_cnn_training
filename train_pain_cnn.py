@@ -13,6 +13,8 @@ from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models
+import concurrent.futures
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -21,12 +23,13 @@ CONFIG = {
     'dataset_path': '../mic1_trim_v2',
     'metadata_path': '../meta_audio.csv',
     'sample_rate': 16000,
-    'n_mels': 128,
+    'n_mels': 64,
     'n_fft': 2048,
-    'hop_length': 512,
+    'hop_length': 1024,
     'duration': 4.0,  # Max duration in seconds
-    'batch_size': 32,
+    'batch_size': 64,
     'epochs': 50,
+    'cache_dir': 'cache',
     'test_split': 0.2,
     'val_split': 0.1,
     'random_state': 42,
@@ -155,58 +158,39 @@ class PainAudioDataset:
 
 
 class CNNModel:
-    """CNN model for pain classification"""
-    
+    """Lightweight CNN for pain classification (CPU-optimized)"""
+
     @staticmethod
     def build(input_shape):
-        """Build CNN model"""
+        """Build lightweight CNN model"""
         model = models.Sequential([
-            # Input layer
             layers.Input(shape=input_shape),
-            
-            # Expand dims for channel dimension
             layers.Reshape((*input_shape, 1)),
-            
+
             # Block 1
-            layers.Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.Conv2D(32, kernel_size=(3, 3), activation='relu', padding='same'),
+            layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
             layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
+            layers.Dropout(0.25),
+
             # Block 2
-            layers.Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.Conv2D(64, kernel_size=(3, 3), activation='relu', padding='same'),
+            layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
             layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
+            layers.Dropout(0.25),
+
             # Block 3
-            layers.Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same'),
-            layers.BatchNormalization(),
-            layers.Conv2D(128, kernel_size=(3, 3), activation='relu', padding='same'),
+            layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
             layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.3),
-            
-            # Global Average Pooling
+            layers.Dropout(0.25),
+
             layers.GlobalAveragePooling2D(),
-            
-            # Dense layers
-            layers.Dense(256, activation='relu'),
-            layers.BatchNormalization(),
-            layers.Dropout(0.4),
-            
             layers.Dense(128, activation='relu'),
-            layers.BatchNormalization(),
             layers.Dropout(0.4),
-            
-            # Output layer (3 classes)
             layers.Dense(3, activation='softmax')
         ])
-        
+
         return model
 
 
@@ -225,26 +209,46 @@ def train_pain_classifier(config):
     if len(df) == 0:
         raise ValueError("No valid audio files found!")
     
-    # Load and extract mel spectrograms
+    # Load and extract mel spectrograms (cached + parallel)
     print("\n[2/5] Extracting mel spectrograms...")
-    X = []
-    y = []
-    valid_indices = []
-    
-    for idx, row in df.iterrows():
-        mel_spec = dataset.load_audio(row['audio_path'])
-        if mel_spec is not None:
-            X.append(mel_spec)
-            y.append(row['class_idx'])
-            valid_indices.append(idx)
-        
-        if (idx + 1) % 500 == 0:
-            print(f"  Processed {idx + 1} files...")
-    
-    X = np.array(X)
-    y = np.array(y)
-    
-    print(f"Successfully loaded {len(X)} mel spectrograms")
+    cache_dir = config.get('cache_dir', 'cache')
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_path = os.path.join(cache_dir, 'spectrograms.npz')
+
+    if os.path.exists(cache_path):
+        print(f"Loading cached spectrograms from {cache_path}...")
+        data = np.load(cache_path)
+        X = data['X']
+        y = data['y']
+        print(f"Loaded {len(X)} cached spectrograms")
+    else:
+        start = time.time()
+        rows = [row for _, row in df.iterrows()]
+
+        def _load_worker(row):
+            return dataset.load_audio(row['audio_path']), row['class_idx']
+
+        X_list = []
+        y_list = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+            futures = [executor.submit(_load_worker, row) for row in rows]
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
+                mel_spec, label = future.result()
+                if mel_spec is not None:
+                    X_list.append(mel_spec)
+                    y_list.append(label)
+                completed += 1
+                if completed % 500 == 0:
+                    print(f"  Processed {completed}/{len(rows)} files...")
+
+        X = np.array(X_list)
+        y = np.array(y_list)
+        print(f"Extracted {len(X)} spectrograms in {time.time() - start:.1f}s")
+
+        np.savez(cache_path, X=X, y=y)
+        print(f"Cached spectrograms to {cache_path}")
+
     print(f"Mel spectrogram shape: {X.shape}")
     # Debug: label distribution
     try:
@@ -292,9 +296,19 @@ def train_pain_classifier(config):
     
     print(model.summary())
     
+    # Prepare tf.data pipelines for efficient training
+    train_ds = tf.data.Dataset.from_tensor_slices((X_train, y_train))
+    train_ds = train_ds.shuffle(buffer_size=min(1024, len(X_train))).batch(config['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+    val_ds = tf.data.Dataset.from_tensor_slices((X_val, y_val))
+    val_ds = val_ds.batch(config['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+    test_ds = tf.data.Dataset.from_tensor_slices((X_test, y_test))
+    test_ds = test_ds.batch(config['batch_size']).prefetch(tf.data.AUTOTUNE)
+
     # Train model
     print("\n[5/5] Training model...")
-    
+
     callbacks = [
         keras.callbacks.EarlyStopping(
             monitor='val_loss',
@@ -308,24 +322,23 @@ def train_pain_classifier(config):
             min_lr=1e-7
         )
     ]
-    
+
     history = model.fit(
-        X_train, y_train,
-        validation_data=(X_val, y_val),
+        train_ds,
+        validation_data=val_ds,
         epochs=config['epochs'],
-        batch_size=config['batch_size'],
         callbacks=callbacks,
         verbose=1
     )
-    
+
     # Evaluate model
     print("\n" + "=" * 60)
     print("Model Evaluation")
     print("=" * 60)
-    
-    train_loss, train_acc = model.evaluate(X_train, y_train, verbose=0)
-    val_loss, val_acc = model.evaluate(X_val, y_val, verbose=0)
-    test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
+
+    train_loss, train_acc = model.evaluate(train_ds, verbose=0)
+    val_loss, val_acc = model.evaluate(val_ds, verbose=0)
+    test_loss, test_acc = model.evaluate(test_ds, verbose=0)
     
     print(f"Training accuracy: {train_acc:.4f}")
     print(f"Validation accuracy: {val_acc:.4f}")

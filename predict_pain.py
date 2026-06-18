@@ -4,6 +4,7 @@ Uses trained CNN model to classify pain levels from audio files
 """
 
 import os
+import concurrent.futures
 import numpy as np
 import librosa
 from sklearn.preprocessing import StandardScaler
@@ -13,9 +14,9 @@ import matplotlib.pyplot as plt
 
 CONFIG = {
     'sample_rate': 16000,
-    'n_mels': 128,
+    'n_mels': 64,
     'n_fft': 2048,
-    'hop_length': 512,
+    'hop_length': 1024,
     'duration': 4.0,
     'model_path': 'pain_cnn_model.h5',
 }
@@ -158,25 +159,64 @@ def visualize_prediction(result):
 
 
 def batch_predict(audio_dir, model, config=None):
-    """Predict pain levels for all audio files in a directory"""
-    
+    """Fast batch prediction for all audio files in a directory"""
+
     if config is None:
         config = CONFIG
-    
-    results = []
+
     audio_files = [f for f in os.listdir(audio_dir) if f.endswith('.wav')]
-    
-    print(f"Processing {len(audio_files)} audio files...")
-    
-    for i, audio_file in enumerate(audio_files):
-        audio_path = os.path.join(audio_dir, audio_file)
-        result = predict_pain_level(audio_path, model, config=config)
-        if result is not None:
-            results.append(result)
-        
-        if (i + 1) % 10 == 0:
-            print(f"  Processed {i + 1}/{len(audio_files)} files")
-    
+    audio_paths = [os.path.join(audio_dir, f) for f in audio_files]
+
+    if not audio_paths:
+        return []
+
+    print(f"Processing {len(audio_paths)} audio files...")
+
+    # Load spectrograms in parallel
+    def _load(path):
+        return load_mel_spectrogram(path, config)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        mel_specs = list(executor.map(_load, audio_paths))
+
+    # Filter valid
+    valid_paths = []
+    valid_specs = []
+    for path, spec in zip(audio_paths, mel_specs):
+        if spec is not None:
+            valid_paths.append(path)
+            valid_specs.append(spec)
+
+    if not valid_specs:
+        return []
+
+    # Normalize batch
+    X = np.array(valid_specs)
+    scaler = _load_scaler()
+    if scaler is not None:
+        orig_shape = X.shape
+        X = scaler.transform(X.reshape(X.shape[0], -1)).reshape(orig_shape)
+    else:
+        means = X.mean(axis=(1, 2), keepdims=True)
+        stds = X.std(axis=(1, 2), keepdims=True) + 1e-8
+        X = (X - means) / stds
+
+    # Single batch prediction
+    predictions = model.predict(X, verbose=0)
+
+    results = []
+    for i, path in enumerate(valid_paths):
+        pred_class = int(np.argmax(predictions[i]))
+        results.append({
+            'audio_path': path,
+            'predicted_class': pred_class,
+            'predicted_class_name': CLASS_NAMES[pred_class],
+            'confidence': float(predictions[i][pred_class]),
+            'all_predictions': {CLASS_NAMES[j]: float(predictions[i][j]) for j in range(3)},
+            'mel_spectrogram': valid_specs[i],
+        })
+
+    print(f"  Done - {len(results)} predictions")
     return results
 
 
